@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bass-separator"
+version = "0.1.0"
+description = "Aislamiento y realce de contrabajo (bajo acústico) en grabaciones de jazz, incluidas big bands antiguas."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "pxjacomex" }]
+keywords = ["audio", "source separation", "double bass", "jazz", "demucs", "music"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+    "tqdm>=4.60",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+    "demucs>=4.0.1",
+]
+
+[project.optional-dependencies]
+ui = ["gradio>=4.0"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+bass-separator = "bass_separator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bass_separator*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
