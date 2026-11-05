@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["gradio>=4.0"]
+crepe = ["torchcrepe>=0.0.23"]
 dev = ["pytest>=7"]
 
 [project.scripts]

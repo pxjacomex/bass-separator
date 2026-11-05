@@ -27,21 +27,38 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("separate", help="separar y realzar el contrabajo de uno o varios WAV")
     sp.add_argument("inputs", nargs="+", help="archivo(s) WAV de entrada")
     sp.add_argument("-o", "--output", default="salida", help="carpeta de salida (por defecto: salida/)")
-    sp.add_argument("--profile", choices=sorted(PRESETS), default="vintage",
-                    help="perfil: vintage (78 rpm, big bands antiguas) o modern")
+    sp.add_argument("--profile", choices=sorted(PRESETS), default=None,
+                    help="perfil: vintage (78 rpm, big bands antiguas) o modern (por defecto se elige "
+                         "con el análisis previo)")
+    sp.add_argument("--no-auto", action="store_true",
+                    help="no elegir parámetros automáticamente a partir del análisis previo")
+    sp.add_argument("--quality", choices=["fast", "balanced", "best"], default="balanced",
+                    help="estrategia de separación: fast (1 modelo, 1 shift), balanced (según dispositivo), "
+                         "best (ensamble htdemucs_ft+mdx_extra, 3 shifts)")
+    sp.add_argument("--speed-correction", default="auto",
+                    help="auto | off | cents (p. ej. +30): corregir la velocidad/afinación respecto a A440")
+    sp.add_argument("--no-two-pass", action="store_true",
+                    help="no repetir el seguimiento de altura sobre la señal realzada")
+    sp.add_argument("--no-priors", action="store_true",
+                    help="desactivar los priores musicales (intervalos, tonalidad, pulso)")
     sp.add_argument("--mode", choices=["raw", "enhance", "hybrid", "resynth"], default="hybrid",
                     help="raw: stem sin tocar; enhance: realce DSP; hybrid: realce + capa resintetizada; "
                          "resynth: solo contrabajo resintetizado")
     sp.add_argument("--backend", choices=["demucs", "dsp"], default="demucs",
                     help="demucs (red neuronal, recomendado) o dsp (sin red, calidad baja)")
-    sp.add_argument("--model", default="htdemucs_ft",
-                    help="modelo(s) Demucs separados por coma: htdemucs_ft, htdemucs, htdemucs_6s, mdx_extra")
+    sp.add_argument("--model", default=None,
+                    help="modelo(s) Demucs separados por coma: htdemucs_ft, htdemucs, htdemucs_6s, mdx_extra "
+                         "(por defecto según --quality y el dispositivo)")
     sp.add_argument("--model-repo", default=None, help="carpeta local con pesos Demucs (uso sin conexión)")
     sp.add_argument("--device", default="auto", help="auto, cpu, cuda o mps")
-    sp.add_argument("--shifts", type=int, default=1, help="aumentos en tiempo de prueba (más lento, algo mejor)")
+    sp.add_argument("--shifts", type=int, default=None,
+                    help="aumentos en tiempo de prueba (más lento, algo mejor; por defecto según --quality)")
     sp.add_argument("--full-bag", action="store_true",
                     help="usar los 4 sub-modelos de htdemucs_ft aunque solo se necesite el bajo")
-    sp.add_argument("--pitch-method", choices=["salience", "pyin"], default="salience")
+    sp.add_argument("--pitch-method", choices=["auto", "salience", "fusion", "crepe", "pyin"], default="auto",
+                    help="seguidor de f0: salience (propio), fusion (salience + CREPE), crepe, pyin")
+    sp.add_argument("--crepe-model", choices=["auto", "tiny", "full"], default="auto",
+                    help="tamaño del modelo CREPE (full es mucho más lento en CPU)")
     sp.add_argument("--fmin", type=float, default=38.0, help="f0 mínima (Hz)")
     sp.add_argument("--fmax", type=float, default=330.0, help="f0 máxima (Hz)")
     sp.add_argument("--resynth-mix", type=float, default=None, help="nivel de la capa resintetizada (0..1)")
@@ -72,8 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("--bass-only", action="store_true", help="solo el sub-modelo de bajo de htdemucs_ft")
     _add_common(dp)
 
-    ap = sub.add_parser("analyze", help="informe rápido de un WAV (mono, ancho de banda, ruido, zumbido)")
+    ap = sub.add_parser("analyze", help="análisis previo de un WAV y parámetros que se elegirían")
     ap.add_argument("input")
+    ap.add_argument("--quality", choices=["fast", "balanced", "best"], default="balanced")
+    ap.add_argument("--device", default="auto")
     _add_common(ap)
 
     mp = sub.add_parser("demo", help="generar una canción sintética de prueba (big band degradada)")
@@ -90,19 +109,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def settings_from_args(args: argparse.Namespace) -> Settings:
-    s = apply_preset(Settings(), args.profile)
+def settings_from_args(args: argparse.Namespace):
+    """Devuelve ``(settings, explicit)``: ``explicit`` son los parámetros fijados por el usuario,
+    que el análisis automático no debe tocar."""
+    explicit = set()
+    s = Settings()
+    if args.profile:
+        s = apply_preset(s, args.profile)
+        explicit.add("profile")
+        explicit.update(PRESETS[args.profile].keys())
     overrides = dict(
-        mode=args.mode, backend=args.backend, models=tuple(m.strip() for m in args.model.split(",") if m.strip()),
-        device=args.device, shifts=args.shifts, bass_only_models=not args.full_bag,
-        pitch_method=args.pitch_method, fmin=args.fmin, fmax=args.fmax,
+        mode=args.mode, backend=args.backend, device=args.device, bass_only_models=not args.full_bag,
+        auto=not args.no_auto, quality=args.quality, speed_correction=args.speed_correction,
+        two_pass=not args.no_two_pass, musical_priors=not args.no_priors,
+        pitch_method=args.pitch_method, crepe_model=args.crepe_model, fmin=args.fmin, fmax=args.fmax,
         quantize_pitch=args.quantize_pitch, stereo=args.stereo, output_sr=args.sr,
         bit_depth=args.bit_depth, write_midi=not args.no_midi, write_notes_json=not args.no_json,
-        write_layers=not args.no_layers,
-        keep_raw=args.keep_raw, keep_stems=args.keep_stems, hum_notch=args.hum_notch,
+        write_layers=not args.no_layers, keep_raw=args.keep_raw, keep_stems=args.keep_stems,
     )
+    if args.model:
+        overrides["models"] = tuple(m.strip() for m in args.model.split(",") if m.strip())
+        explicit.add("models")
+    if args.shifts is not None:
+        overrides["shifts"] = args.shifts
+        explicit.add("shifts")
+    if args.hum_notch:
+        overrides["hum_notch"] = True
+        explicit.add("hum_notch")
     if args.no_declick:
         overrides["declick"] = False
+        explicit.add("declick")
+    if args.pitch_method != "auto":
+        explicit.add("pitch_method")
+    if args.crepe_model != "auto":
+        explicit.add("crepe_model")
+    if str(args.speed_correction).lower() != "auto":
+        explicit.add("speed_correction")
     for attr, val in (("resynth_mix", args.resynth_mix), ("sub_gain", args.sub_gain),
                       ("denoise", args.denoise), ("harmonic_strength", args.harmonic_strength),
                       ("bleed_reduction", args.bleed_reduction), ("compress", args.compress),
@@ -110,21 +152,40 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
                       ("lowpass_hz", args.lowpass)):
         if val is not None:
             overrides[attr] = val
-    return replace(s, **overrides)
+            explicit.add(attr)
+    return replace(s, **overrides), explicit
+
+
+def _print_auto_report(res) -> None:
+    an = res.analysis
+    if an:
+        print("   Análisis previo: "
+              f"{'mono' if an.get('mono') else 'estéreo'}, banda ~{an.get('band_lo_hz', 0):.0f}-{an.get('band_hi_hz', 0):.0f} Hz, "
+              f"SNR {an.get('snr_db', 0):.0f} dB, {an.get('crackle_per_s', 0):.1f} clics/s, "
+              f"afinación {an.get('tuning_cents', 0):+.0f} cents, tempo ~{an.get('tempo_bpm', 0):.0f} BPM, "
+              f"tonalidad {an.get('key', '?')}, vintage {an.get('vintage_score', 0):.2f}")
+    if res.choices:
+        print("   Parámetros elegidos: " + ", ".join(f"{k}={v['valor']}" for k, v in res.choices.items()))
+    if res.speed_correction_cents:
+        print(f"   Corrección de velocidad aplicada: {res.speed_correction_cents:+.1f} cents")
+    if res.passes.get("pass2_notes") is not None:
+        print(f"   Doble pasada: {res.passes['pass1_notes']} notas en la 1.ª, {res.passes['pass2_notes']} en la 2.ª")
 
 
 def cmd_separate(args: argparse.Namespace) -> int:
     from .pipeline import process_file
-    settings = settings_from_args(args)
+    settings, explicit = settings_from_args(args)
     rc = 0
     for inp in args.inputs:
         try:
-            res = process_file(inp, args.output, settings)
+            res = process_file(inp, args.output, settings, explicit=explicit)
         except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).error("Error procesando %s: %s", inp, exc, exc_info=args.verbose)
             rc = 1
             continue
-        print(f"✔ {inp}\n   contrabajo: {res.output_path}")
+        print(f"✔ {inp}")
+        _print_auto_report(res)
+        print(f"   contrabajo: {res.output_path}")
         if res.enhanced_path:
             print(f"   solo realce (sin capa sintética): {res.enhanced_path}")
         if res.synth_path:
@@ -147,29 +208,16 @@ def cmd_download(args: argparse.Namespace) -> int:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    import numpy as np
-    from .audio_io import is_effectively_mono, load_audio, to_mono
-    from .dsp import amp2db, rms
-    from .restore import detect_hum
-    from scipy import signal
+    from .analysis import analyze_audio, describe_choices, recommend_settings
+    from .audio_io import load_audio
     y, sr = load_audio(args.input)
-    mono = to_mono(y)
-    f, p = signal.welch(mono, fs=sr, nperseg=1 << 14)
-    pdb = 10 * np.log10(p + 1e-20)
-    peak = pdb.max()
-    above = f[pdb > peak - 40]
-    print(f"Archivo:        {args.input}")
-    print(f"Canales/SR:     {y.shape[0]} / {sr} Hz, duración {y.shape[-1] / sr:.1f} s")
-    print(f"Mono efectivo:  {'sí' if is_effectively_mono(y) else 'no'}")
-    print(f"Nivel RMS:      {amp2db(rms(mono)):.1f} dBFS, pico {amp2db(np.abs(mono).max()):.1f} dBFS")
-    if len(above):
-        print(f"Ancho de banda: ~{above.min():.0f} – {above.max():.0f} Hz (a -40 dB del máximo)")
-    hum = detect_hum(y, sr)
-    print(f"Zumbido de red: {'%.0f Hz' % hum if hum else 'no detectado'}")
-    low = pdb[(f >= 40) & (f < 100)].mean()
-    mid = pdb[(f >= 100) & (f < 300)].mean()
-    print(f"Energía 40-100 Hz relativa a 100-300 Hz: {low - mid:+.1f} dB "
-          f"({'fundamentales del bajo débiles' if low - mid < -12 else 'graves presentes'})")
+    an = analyze_audio(y, sr)
+    print(f"Archivo: {args.input}")
+    print(an.report())
+    s, choices = recommend_settings(an, Settings(quality=args.quality), device=args.device)
+    print(f"\nParámetros recomendados (--quality {args.quality}, dispositivo {args.device}):")
+    print(describe_choices(choices))
+    print(f"\nComando equivalente:\n  bass-separator separate \"{args.input}\" --quality {args.quality}")
     return 0
 
 

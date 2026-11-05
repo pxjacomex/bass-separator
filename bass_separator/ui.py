@@ -8,25 +8,35 @@ from pathlib import Path
 from .config import PRESETS, Settings, apply_preset
 
 
-def _process(file_path, profile, mode, backend, model, resynth_mix, sub_gain, denoise,
+def _process(file_path, auto, quality, profile, mode, backend, model, resynth_mix, sub_gain, denoise,
              harmonic_strength, shifts, progress=None):
     from .pipeline import process_file
     if not file_path:
         raise ValueError("Sube un archivo WAV")
-    settings = apply_preset(Settings(), profile)
-    settings = replace(settings, mode=mode, backend=backend, models=(model,), shifts=int(shifts),
-                       resynth_mix=float(resynth_mix), sub_gain=float(sub_gain),
-                       denoise=float(denoise), harmonic_strength=float(harmonic_strength),
-                       keep_raw=True)
+    if auto:
+        settings = replace(Settings(), auto=True, quality=quality, mode=mode, backend=backend,
+                           resynth_mix=float(resynth_mix), keep_raw=True)
+        explicit = {"resynth_mix"}
+    else:
+        settings = apply_preset(Settings(), profile)
+        settings = replace(settings, auto=False, mode=mode, backend=backend, models=(model,),
+                           shifts=int(shifts), resynth_mix=float(resynth_mix), sub_gain=float(sub_gain),
+                           denoise=float(denoise), harmonic_strength=float(harmonic_strength),
+                           keep_raw=True)
+        explicit = set()
     out_dir = Path(tempfile.mkdtemp(prefix="bass_separator_"))
 
     def cb(msg, frac):
         if progress is not None:
             progress(frac, desc=msg)
 
-    res = process_file(file_path, out_dir, settings, progress=cb)
+    res = process_file(file_path, out_dir, settings, progress=cb, explicit=explicit)
     summary = (f"{res.n_notes} notas detectadas · {res.voiced_fraction * 100:.0f} % del tiempo con bajo · "
                f"{res.timings.get('total', 0):.1f} s de proceso")
+    if res.choices:
+        summary += "\nParámetros automáticos: " + ", ".join(f"{k}={v['valor']}" for k, v in res.choices.items())
+    if res.speed_correction_cents:
+        summary += f"\nCorrección de velocidad: {res.speed_correction_cents:+.1f} cents"
     return (res.output_path, res.enhanced_path, res.synth_path, res.raw_path, res.midi_path,
             res.notes_json_path, summary)
 
@@ -39,7 +49,9 @@ def build_app():
         with gr.Row():
             with gr.Column():
                 inp = gr.Audio(label="Archivo WAV", type="filepath")
-                profile = gr.Dropdown(sorted(PRESETS), value="vintage", label="Perfil")
+                auto = gr.Checkbox(value=True, label="Automático: analizar la grabación y elegir parámetros")
+                quality = gr.Dropdown(["fast", "balanced", "best"], value="balanced", label="Calidad (ensamble y TTA)")
+                profile = gr.Dropdown(sorted(PRESETS), value="vintage", label="Perfil (modo manual)")
                 mode = gr.Radio(["hybrid", "enhance", "resynth", "raw"], value="hybrid", label="Modo")
                 backend = gr.Radio(["demucs", "dsp"], value="demucs", label="Separador")
                 model = gr.Dropdown(["htdemucs_ft", "htdemucs", "htdemucs_6s", "mdx_extra"],
@@ -59,7 +71,7 @@ def build_app():
                 notes = gr.File(label="Notas (JSON)")
                 summary = gr.Textbox(label="Resumen")
         btn.click(lambda *a, progress=gr.Progress(): _process(*a, progress=progress),
-                  inputs=[inp, profile, mode, backend, model, resynth_mix, sub_gain, denoise,
+                  inputs=[inp, auto, quality, profile, mode, backend, model, resynth_mix, sub_gain, denoise,
                           harmonic_strength, shifts],
                   outputs=[out, enh, syn, raw, midi, notes, summary])
     return app

@@ -73,3 +73,15 @@ def match_length(y: np.ndarray, n: int) -> np.ndarray:
         return y[..., :n]
     pad = [(0, 0)] * (y.ndim - 1) + [(0, n - cur)]
     return np.pad(y, pad)
+
+
+def speed_correct(y: np.ndarray, sr: int, cents: float) -> np.ndarray:
+    """Corrige la velocidad de reproducción (afinación y tempo a la vez).
+
+    ``cents`` > 0 significa que la grabación suena aguda (va rápida): se
+    alarga la señal por 2^(cents/1200) para bajarla a la afinación de referencia.
+    """
+    if abs(cents) < 1e-6:
+        return y
+    factor = 2.0 ** (cents / 1200.0)
+    return resample(y, sr, int(round(sr * factor)))

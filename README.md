@@ -13,28 +13,64 @@ bajista hubiera tenido un micrófono dedicado, conservando sus fraseos y su
 ## Cómo funciona
 
 ```
-WAV  ─►  Restauración previa  ─►  Separación (Demucs)  ─►  Seguimiento de f0 y notas
-            de-click, DC,            stem "bass"            salience armónica + Viterbi,
-            siseo suave                                     ataques, segmentación
-                                                                   │
-         WAV contrabajo  ◄─  Dinámica/EQ  ◄─  Resíntesis (opcional)  ◄─  Realce guiado por f0
+WAV ─► Análisis previo ─► Restauración ─► Corrección de ─► Separación ─► Seguimiento de f0 y notas
+       banda, SNR, clics,   de-click, DC,    velocidad       (Demucs,       salience + CREPE, Viterbi con
+       afinación, tempo,    siseo suave      (A440)          ensamble/TTA)  priores de intervalo/tonalidad,
+       tonalidad, vintage                                                   ataques guiados por el pulso
+       └─► elige parámetros                                                        │
+                                                                        ┌──────────┘
+         WAV contrabajo  ◄─  Dinámica/EQ  ◄─  Resíntesis (opcional)  ◄─  Realce guiado por f0 (2 pasadas)
          MIDI + JSON         limitador        modelo físico de cuerda      máscara armónica, puerta
                                               pulsada + cuerpo             espectral, HPSS, graves
 ```
 
+0. **Análisis previo y parámetros automáticos** (`--auto`, activado por
+   defecto). Antes de separar se mide la grabación original: mono efectivo,
+   ancho de banda, SNR, crepitar, zumbido, desviación de afinación respecto a
+   A = 440 Hz, tempo y rejilla de pulsos, tonalidad y una puntuación "vintage".
+   Con eso se eligen el perfil, la estrategia de separación (ensamble de modelos
+   y aumentos en tiempo de prueba según `--quality` y el dispositivo), la
+   corrección de velocidad, las fuerzas de reducción de ruido y de
+   reconstrucción de graves, el pasa-bajos y el seguidor de altura. Cualquier
+   opción que des explícitamente en la línea de comandos prevalece. Con
+   `bass-separator analyze archivo.wav` ves el informe y los parámetros que se
+   elegirían sin procesar nada.
 1. **Restauración previa** (perfil `vintage`): filtro de DC/subsónicos,
    eliminación de clics y crepitar por interpolación cúbica, reducción suave del
    siseo y, opcionalmente, del zumbido de red (50/60 Hz) si se detecta.
+1b. **Corrección de velocidad**: muchas transferencias de 78 rpm van algo
+   rápidas o lentas. Se estima la desviación de afinación (histograma circular
+   de los picos espectrales respecto a la rejilla temperada de A440, con
+   confianza) y, si es significativa (≥ 8 cents y fiable), se remuestrea toda
+   la pieza para corregir afinación y tempo a la vez. `--speed-correction +30`
+   fuerza un valor, `off` lo desactiva. Ojo: solo se detecta la parte
+   fraccionaria (±50 cents); un error de un semitono entero no es detectable.
 2. **Separación de fuentes** con [Demucs](https://github.com/facebookresearch/demucs)
    (Hybrid Transformer Demucs, Meta AI Research, licencia MIT). Por defecto se
    usa `htdemucs_ft`; como solo se necesita el bajo, se carga únicamente el
    sub-modelo entrenado para esa fuente (4× más rápido, resultado idéntico).
-   Se pueden promediar varios modelos (`--model htdemucs_ft,mdx_extra`).
+   **Ensamble y TTA**: `--quality best` promedia `htdemucs_ft` y `mdx_extra`
+   (dos arquitecturas distintas) con 3 desplazamientos aleatorios en tiempo de
+   prueba; `balanced` lo hace automáticamente si hay GPU y en CPU usa un modelo
+   con 2 desplazamientos en grabaciones vintage cortas; `fast` usa un modelo y
+   un desplazamiento. También se puede fijar a mano (`--model htdemucs_ft,mdx_extra --shifts 3`).
 3. **Seguimiento de la línea de bajo**: un seguidor de f0 propio basado en
    *salience* armónica con decodificación de Viterbi, diseñado para grabaciones
    en las que la fundamental (40-80 Hz) se perdió: la altura se deduce de los
    armónicos y se comprueba la ausencia de sub-armónicos para evitar errores de
-   octava. Las notas se segmentan con los ataques y los cambios de altura.
+   octava. **Priores musicales** (`--no-priors` los desactiva): la matriz de
+   transición del Viterbi pondera los intervalos típicos del walking bass
+   (pasos, 4.ª, 5.ª, octava), las alturas fuera de la tonalidad estimada reciben
+   una penalización leve, cerca de cada pulso y sub-pulso se aceptan ataques
+   más débiles y las notas muy cortas fuera de la rejilla rítmica se consideran
+   fallos de seguimiento. **Pitch neuronal preentrenado**: con `pip install
+   "bass-separator[crepe]"` se puede fusionar la activación de CREPE (Kim et
+   al., 2018; port `torchcrepe`, pesos incluidos en el paquete) con la
+   *salience* (`--pitch-method fusion`) o usar CREPE solo (`--pitch-method crepe`).
+   **Doble pasada** (`--no-two-pass` la desactiva): tras el primer realce se
+   vuelve a seguir la altura sobre la señal realzada, más limpia y con la
+   fundamental reconstruida, y se realza de nuevo el stem con esa pista; la
+   transcripción final (MIDI/JSON) es la de la segunda pasada.
 4. **Realce guiado por la altura**: en una sola pasada STFT se combinan una
    máscara armónica adaptativa (deja pasar k·f0 con tolerancia a la
    inarmonicidad de la cuerda), una puerta espectral que nunca toca los bins
@@ -92,11 +128,20 @@ proceso es 10-30× más rápido. En CPU, un tema de 3 minutos tarda del orden de
 # descarga y verificación de los pesos (opcional, se hace sola la primera vez)
 bass-separator download-models
 
-# caso típico: grabación antigua de big band
+# caso típico: grabación antigua de big band (análisis previo + parámetros automáticos)
 bass-separator separate "Count Basie - Jumpin at the Woodside.wav" -o salida
 
-# varios archivos, más calidad (TTA), promediando dos modelos
-bass-separator separate *.wav -o salida --shifts 2 --model htdemucs_ft,mdx_extra
+# ver el análisis previo y los parámetros que se elegirían, sin procesar
+bass-separator analyze "Count Basie - Jumpin at the Woodside.wav"
+
+# máxima calidad: ensamble htdemucs_ft + mdx_extra con 3 aumentos en tiempo de prueba
+bass-separator separate *.wav -o salida --quality best
+
+# forzar parámetros concretos (prevalecen sobre el análisis automático)
+bass-separator separate tema.wav --speed-correction +25 --model htdemucs_ft,mdx_extra --shifts 2
+
+# seguidor de altura con CREPE fusionado (requiere pip install "bass-separator[crepe]")
+bass-separator separate tema.wav --pitch-method fusion --crepe-model full
 
 # grabación moderna, solo realce DSP sin capa resintetizada
 bass-separator separate tema.wav --profile modern --mode enhance
@@ -127,7 +172,14 @@ Salida (en la carpeta `-o`, por defecto `salida/`):
 
 | opción | valores | descripción |
 |---|---|---|
-| `--profile` | `vintage` (defecto), `modern` | ajusta de-click, reducción de ruido, reconstrucción de graves, EQ |
+| `--no-auto` | | no elegir parámetros a partir del análisis previo |
+| `--quality` | `fast`, `balanced` (defecto), `best` | ensamble de modelos y aumentos en tiempo de prueba |
+| `--speed-correction` | `auto` (defecto), `off`, cents | corrección de velocidad/afinación respecto a A440 |
+| `--no-two-pass` | | una sola pasada de seguimiento y realce |
+| `--no-priors` | | sin priores de intervalos, tonalidad y pulso |
+| `--pitch-method` | `auto`, `salience`, `fusion`, `crepe`, `pyin` | seguidor de f0 (`fusion`/`crepe` requieren torchcrepe) |
+| `--crepe-model` | `auto`, `tiny`, `full` | `full` es ~12× más lento que `tiny` en CPU |
+| `--profile` | `vintage`, `modern` | ajusta de-click, reducción de ruido, reconstrucción de graves, EQ (por defecto lo elige el análisis) |
 | `--mode` | `hybrid` (defecto), `enhance`, `resynth`, `raw` | realce + capa resintetizada / solo realce / solo resíntesis / stem sin tocar |
 | `--resynth-mix` | 0..1 | nivel de la capa resintetizada (0.35) |
 | `--sub-gain` | 0..2 | cuánto se reconstruye la fundamental perdida (1.0) |
@@ -135,7 +187,6 @@ Salida (en la carpeta `-o`, por defecto `salida/`):
 | `--harmonic-strength` | 0..1 | atenuación de lo que no es armónico de la nota (0.8) |
 | `--bleed-reduction` | 0..1 | reducción del colado de batería (0.6) |
 | `--quantize-pitch` | | afina la capa resintetizada a semitonos exactos |
-| `--pitch-method` | `salience`, `pyin` | seguidor de f0 (el propio o el de librosa) |
 | `--backend` | `demucs`, `dsp` | `dsp` no usa red neuronal: solo para pruebas o sin conexión |
 
 Consejos para 78 rpm: si el resultado suena "hueco", sube `--sub-gain 1.5`;
@@ -166,9 +217,27 @@ Las pruebas usan una big band sintética (línea de walking bass con modelo fís
 piano, batería y metales) degradada a 78 rpm, y comprueban entre otras cosas que
 el seguidor de f0 supera el 95 % de precisión con la fundamental ausente, que la
 transcripción recupera más del 80 % de las notas con colado y ruido fuertes, que
-el realce mejora la SI-SDR del stem y que el pipeline completo funciona en los
-cuatro modos. La integración con Demucs se valida con el modelo de prueba del
-propio paquete (sin descargar pesos).
+el realce mejora la SI-SDR del stem, que la afinación se estima con error
+inferior a 4 cents y la corrección de velocidad devuelve la altura original,
+que los priores musicales no empeoran la precisión y reducen las notas
+espurias, y que el pipeline completo funciona en los cuatro modos con y sin
+análisis automático. La integración con Demucs se valida con el modelo de prueba
+del propio paquete (sin descargar pesos).
+
+Resultados medidos sobre ese material (precisión de altura por trama, media de
+8 casos: limpio, sin fundamental, muy ruidoso y con colado de banda):
+
+| seguidor | precisión media | peor caso |
+|---|---|---|
+| salience (propio) | 0,88 | 0,76 |
+| salience + priores de intervalo y tonalidad | 0,90 | 0,79 |
+| pyin (librosa) | 0,81 | 0,57 |
+| salience + CREPE `tiny` | 0,75 | 0,54 |
+| CREPE `tiny` solo | 0,58 | 0,37 |
+
+CREPE no se entrenó para el registro del contrabajo en grabaciones degradadas,
+así que por defecto el modo automático usa `salience` con priores; `fusion` y
+`crepe` quedan como opciones para grabaciones modernas o para comparar.
 
 Generar una demo: `bass-separator demo -o demo_bigband.wav --duration 20`.
 

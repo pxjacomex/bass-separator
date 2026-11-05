@@ -12,6 +12,7 @@ Dos métodos:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import librosa
@@ -159,18 +160,45 @@ def _salience_matrix(y: np.ndarray, sr: int, fmin: float, fmax: float, hop_s: fl
     return cand, sal, rdb, hop
 
 
+# Frecuencia relativa aproximada de los intervalos melódicos (en semitonos) en
+# líneas de walking bass: pasos y saltos de 4.ª/5.ª/octava son los más comunes.
+INTERVAL_PRIOR = np.array([1.0, 1.0, 1.0, 0.8, 0.8, 0.9, 0.5, 0.9, 0.55, 0.65, 0.5, 0.45, 0.8,
+                           0.35, 0.35, 0.3, 0.3, 0.35, 0.25, 0.35, 0.2, 0.2, 0.2, 0.2, 0.3])
+
+
+def _interval_weights(d_semitones: np.ndarray) -> np.ndarray:
+    k = np.clip(np.round(d_semitones).astype(int), 0, len(INTERVAL_PRIOR) - 1)
+    w = INTERVAL_PRIOR[k]
+    return np.where(d_semitones < 0.5, 1.0, w)
+
+
 def _salience_track(y: np.ndarray, sr: int, fmin: float, fmax: float, hop_s: float,
                     cents_step: float = 20.0, n_harm: int = 10, harm_decay: float = 0.8,
                     sub_penalty: float = 0.8, voicing_threshold: float = 0.3,
                     emission_sharpness: float = 6.0, jump_tau: float = 2.0,
                     p_stay: float = 0.85, energy_gate_db: float = 50.0,
-                    margin_db: float = 3.0) -> PitchTrack:
+                    margin_db: float = 3.0, interval_prior: bool = False,
+                    key_pcs: Optional[np.ndarray] = None, key_penalty: float = 0.03,
+                    crepe_act: Optional[np.ndarray] = None, crepe_weight: float = 0.7,
+                    crepe_only: bool = False) -> PitchTrack:
     cand, sal, rdb, hop = _salience_matrix(y, sr, fmin, fmax, hop_s, cents_step, n_harm,
                                            harm_decay, sub_penalty, margin_db)
     sr_a = ANALYSIS_SR
     n_cand, n_frames = sal.shape
     ref = np.percentile(rdb, 98)
     quiet = rdb < ref - energy_gate_db
+
+    # fusión con la activación de CREPE (misma rejilla de candidatos)
+    if crepe_act is not None:
+        act = crepe_act[:, :n_frames].astype(np.float32)
+        if act.shape[1] < n_frames:
+            act = np.pad(act, ((0, 0), (0, n_frames - act.shape[1])), mode="edge")
+        sal = act if crepe_only else (sal + crepe_weight * act) / (1.0 + crepe_weight)
+    # prior de tonalidad: pequeña penalización a las alturas no diatónicas
+    if key_pcs is not None and key_penalty > 0:
+        pcs = np.round(hz_to_midi(cand)).astype(int) % 12
+        sal = sal - key_penalty * (~np.asarray(key_pcs, dtype=bool)[pcs])[:, None].astype(np.float32)
+        sal = np.clip(sal, 0.0, 1.0)
 
     # emisiones log-lineales: p(obs | f0) ∝ exp(lambda * salience)
     emis = np.empty((n_cand + 1, n_frames), dtype=np.float64)
@@ -183,6 +211,8 @@ def _salience_track(y: np.ndarray, sr: int, fmin: float, fmax: float, hop_s: flo
     st = np.arange(n_cand) * cents_step / 100.0
     d = np.abs(st[:, None] - st[None, :])
     off = np.exp(-d / jump_tau) + 1e-4
+    if interval_prior:
+        off = (np.exp(-d / (2.0 * jump_tau)) + 1e-4) * _interval_weights(d)
     np.fill_diagonal(off, 0.0)
     off /= off.sum(axis=1, keepdims=True)
     trans = (1.0 - p_stay) * off + p_stay * np.eye(n_cand)
@@ -241,11 +271,74 @@ def _pyin_track(y: np.ndarray, sr: int, fmin: float, fmax: float, hop_s: float) 
                       hop_s=hop / sr_a)
 
 
+# ---------------------------------------------------------------------------
+# CREPE (red neuronal preentrenada, Kim et al. 2018) vía torchcrepe
+# ---------------------------------------------------------------------------
+CREPE_SR = 16000
+CREPE_HOP = 160          # 10 ms
+CREPE_CENTS0 = 1997.3794354035
+CREPE_CENTS_PER_BIN = 20.0
+
+
+def crepe_activation(y: np.ndarray, sr: int, cand: np.ndarray, frame_times: np.ndarray,
+                     model: str = "tiny", device: str = "cpu", batch_size: int = 512) -> np.ndarray:
+    """Activación de CREPE (0..1) remuestreada a los candidatos ``cand`` y a ``frame_times``.
+
+    Devuelve una matriz (n_cand, n_frames). Requiere ``torchcrepe`` (los pesos
+    vienen incluidos en el paquete, no se descarga nada).
+    """
+    import torch
+    import torchcrepe
+
+    ya = to_mono(np.asarray(y, dtype=np.float32))
+    if sr != CREPE_SR:
+        ya = resample(ya, sr, CREPE_SR)
+    audio = torch.from_numpy(np.ascontiguousarray(ya))[None]
+    acts = []
+    with torch.no_grad():
+        for frames in torchcrepe.preprocess(audio, CREPE_SR, hop_length=CREPE_HOP, batch_size=batch_size,
+                                            device=device, pad=True):
+            acts.append(torchcrepe.infer(frames, model=model, device=device).detach().cpu())
+    act = torch.cat(acts, 0).numpy().astype(np.float32)          # (T_crepe, 360)
+    # alineación temporal (CREPE: 10 ms exactos) y en frecuencia (bins de 20 cents desde ~C1)
+    idx_t = np.clip(np.round(np.asarray(frame_times) / (CREPE_HOP / CREPE_SR)).astype(int), 0, len(act) - 1)
+    cents = 1200.0 * np.log2(np.asarray(cand) / 10.0)
+    pos = (cents - CREPE_CENTS0) / CREPE_CENTS_PER_BIN
+    lo = np.clip(np.floor(pos).astype(int), 0, act.shape[1] - 1)
+    hi = np.clip(lo + 1, 0, act.shape[1] - 1)
+    frac = np.clip(pos - lo, 0.0, 1.0)
+    at = act[idx_t]                                               # (n_frames, 360)
+    out = at[:, lo] * (1 - frac)[None, :] + at[:, hi] * frac[None, :]
+    return np.ascontiguousarray(out.T)
+
+
 def track_pitch(y: np.ndarray, sr: int, fmin: float = 38.0, fmax: float = 330.0,
-                method: str = "salience", hop_s: float = 0.01, **kwargs) -> PitchTrack:
-    """Estima la trayectoria de f0 del contrabajo en ``y`` (mono o multicanal)."""
-    if method == "salience":
-        return _salience_track(y, sr, fmin, fmax, hop_s, **kwargs)
+                method: str = "salience", hop_s: float = 0.01, interval_prior: bool = False,
+                key_pcs: Optional[np.ndarray] = None, crepe_model: str = "tiny",
+                device: str = "cpu", **kwargs) -> PitchTrack:
+    """Estima la trayectoria de f0 del contrabajo en ``y`` (mono o multicanal).
+
+    ``method``: ``salience`` (propio), ``fusion`` (salience + CREPE), ``crepe``
+    (solo CREPE con decodificación de Viterbi y penalizaciones de octava) o ``pyin``.
+    """
+    if method == "auto":
+        try:
+            import torchcrepe  # noqa: F401
+            method = "fusion"
+        except Exception:
+            method = "salience"
     if method == "pyin":
         return _pyin_track(y, sr, fmin, fmax, hop_s)
-    raise ValueError(f"Método de pitch desconocido: {method!r}")
+    if method not in ("salience", "fusion", "crepe"):
+        raise ValueError(f"Método de pitch desconocido: {method!r}")
+    crepe_act = None
+    if method in ("fusion", "crepe"):
+        cents_step = kwargs.get("cents_step", 20.0)
+        n_cand = int(np.ceil(1200.0 * np.log2(fmax / fmin) / cents_step)) + 1
+        cand = fmin * 2.0 ** (np.arange(n_cand) * cents_step / 1200.0)
+        hop = max(1, int(round(hop_s * ANALYSIS_SR)))
+        n_frames = 1 + int(len(to_mono(np.asarray(y)) ) * ANALYSIS_SR / sr) // hop
+        frame_times = np.arange(n_frames) * hop / ANALYSIS_SR
+        crepe_act = crepe_activation(y, sr, cand, frame_times, model=crepe_model, device=device)
+    return _salience_track(y, sr, fmin, fmax, hop_s, interval_prior=interval_prior, key_pcs=key_pcs,
+                           crepe_act=crepe_act, crepe_only=(method == "crepe"), **kwargs)

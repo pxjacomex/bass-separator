@@ -28,8 +28,16 @@ class Settings:
     pre_denoise: float = 0.5                   # 0..1 reducción de siseo antes de separar
     hum_notch: bool = False                    # notch 50/60 Hz y armónicos
 
+    # --- Análisis previo y automatización ---------------------------------------
+    auto: bool = True                          # analizar el audio y elegir parámetros
+    quality: str = "balanced"                  # "fast" | "balanced" | "best" (ensamble y TTA)
+    speed_correction: str = "auto"             # "auto" | "off" | cents (p. ej. "+25")
+    two_pass: bool = True                      # segunda pasada de seguimiento sobre la señal realzada
+    musical_priors: bool = True                # priores de intervalos, tonalidad y pulso
+
     # --- Seguimiento de altura --------------------------------------------------
-    pitch_method: str = "salience"             # "salience" | "pyin"
+    pitch_method: str = "auto"                 # "auto" | "salience" | "fusion" | "crepe" | "pyin"
+    crepe_model: str = "auto"                  # "auto" | "tiny" | "full"
     fmin: float = 38.0                         # Hz (E1 = 41.2 Hz)
     fmax: float = 330.0                        # Hz (E4 = 329.6 Hz)
 
