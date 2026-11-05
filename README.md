@@ -235,9 +235,20 @@ Resultados medidos sobre ese material (precisión de altura por trama, media de
 | salience + CREPE `tiny` | 0,75 | 0,54 |
 | CREPE `tiny` solo | 0,58 | 0,37 |
 
-CREPE no se entrenó para el registro del contrabajo en grabaciones degradadas,
-así que por defecto el modo automático usa `salience` con priores; `fusion` y
-`crepe` quedan como opciones para grabaciones modernas o para comparar.
+Sobre los 6 casos degradados (sin los limpios), con el modelo `full` de CREPE:
+
+| seguidor | precisión media | peor caso | tiempo CPU |
+|---|---|---|---|
+| salience + priores | 0,87 | 0,79 | 2 s |
+| salience + CREPE `full` (peso 0,3) | 0,87 | 0,77 | 140 s |
+| salience + CREPE `full` (peso 0,7) | 0,80 | 0,68 | 159 s |
+| CREPE `full` solo | 0,67 | 0,51 | 111 s |
+
+CREPE no se entrenó para el registro del contrabajo en grabaciones degradadas:
+fusionado con peso bajo iguala a `salience` con priores, pero cuesta 70× más
+en CPU, y solo es claramente peor. Por eso el modo automático usa `salience`
+con priores; `fusion` (peso 0,3 por defecto) y `crepe` quedan como opciones
+para grabaciones modernas o para comparar.
 
 Generar una demo: `bass-separator demo -o demo_bigband.wav --duration 20`.
 

@@ -179,7 +179,7 @@ def _salience_track(y: np.ndarray, sr: int, fmin: float, fmax: float, hop_s: flo
                     p_stay: float = 0.85, energy_gate_db: float = 50.0,
                     margin_db: float = 3.0, interval_prior: bool = False,
                     key_pcs: Optional[np.ndarray] = None, key_penalty: float = 0.03,
-                    crepe_act: Optional[np.ndarray] = None, crepe_weight: float = 0.7,
+                    crepe_act: Optional[np.ndarray] = None, crepe_weight: float = 0.3,
                     crepe_only: bool = False) -> PitchTrack:
     cand, sal, rdb, hop = _salience_matrix(y, sr, fmin, fmax, hop_s, cents_step, n_harm,
                                            harm_decay, sub_penalty, margin_db)
