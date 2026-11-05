@@ -61,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bit-depth", choices=["PCM_16", "PCM_24", "FLOAT"], default="PCM_24")
     sp.add_argument("--no-midi", action="store_true", help="no escribir el archivo MIDI")
     sp.add_argument("--no-json", action="store_true", help="no escribir el JSON de notas")
+    sp.add_argument("--no-layers", action="store_true",
+                    help="en modo hybrid, no guardar por separado el realce (sin capa sintética) y la capa sintética")
     sp.add_argument("--keep-raw", action="store_true", help="guardar también el stem de bajo sin realce")
     sp.add_argument("--keep-stems", action="store_true", help="guardar también batería, voces y otros")
     _add_common(sp)
@@ -96,6 +98,7 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         pitch_method=args.pitch_method, fmin=args.fmin, fmax=args.fmax,
         quantize_pitch=args.quantize_pitch, stereo=args.stereo, output_sr=args.sr,
         bit_depth=args.bit_depth, write_midi=not args.no_midi, write_notes_json=not args.no_json,
+        write_layers=not args.no_layers,
         keep_raw=args.keep_raw, keep_stems=args.keep_stems, hum_notch=args.hum_notch,
     )
     if args.no_declick:
@@ -122,6 +125,10 @@ def cmd_separate(args: argparse.Namespace) -> int:
             rc = 1
             continue
         print(f"✔ {inp}\n   contrabajo: {res.output_path}")
+        if res.enhanced_path:
+            print(f"   solo realce (sin capa sintética): {res.enhanced_path}")
+        if res.synth_path:
+            print(f"   solo capa sintética:              {res.synth_path}")
         if res.midi_path:
             print(f"   MIDI:       {res.midi_path}")
         if res.notes_json_path:

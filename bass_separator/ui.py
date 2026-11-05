@@ -27,7 +27,8 @@ def _process(file_path, profile, mode, backend, model, resynth_mix, sub_gain, de
     res = process_file(file_path, out_dir, settings, progress=cb)
     summary = (f"{res.n_notes} notas detectadas · {res.voiced_fraction * 100:.0f} % del tiempo con bajo · "
                f"{res.timings.get('total', 0):.1f} s de proceso")
-    return res.output_path, res.raw_path, res.midi_path, res.notes_json_path, summary
+    return (res.output_path, res.enhanced_path, res.synth_path, res.raw_path, res.midi_path,
+            res.notes_json_path, summary)
 
 
 def build_app():
@@ -50,7 +51,9 @@ def build_app():
                 harmonic_strength = gr.Slider(0, 1, value=0.8, step=0.05, label="Máscara armónica")
                 btn = gr.Button("Procesar", variant="primary")
             with gr.Column():
-                out = gr.Audio(label="Contrabajo realzado", type="filepath")
+                out = gr.Audio(label="Contrabajo (mezcla final)", type="filepath")
+                enh = gr.Audio(label="Solo realce, sin capa sintética (modo hybrid)", type="filepath")
+                syn = gr.Audio(label="Solo capa sintética (modo hybrid)", type="filepath")
                 raw = gr.Audio(label="Stem sin realce", type="filepath")
                 midi = gr.File(label="MIDI de la línea de bajo")
                 notes = gr.File(label="Notas (JSON)")
@@ -58,7 +61,7 @@ def build_app():
         btn.click(lambda *a, progress=gr.Progress(): _process(*a, progress=progress),
                   inputs=[inp, profile, mode, backend, model, resynth_mix, sub_gain, denoise,
                           harmonic_strength, shifts],
-                  outputs=[out, raw, midi, notes, summary])
+                  outputs=[out, enh, syn, raw, midi, notes, summary])
     return app
 
 

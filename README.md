@@ -115,7 +115,9 @@ Salida (en la carpeta `-o`, por defecto `salida/`):
 
 | archivo | contenido |
 |---|---|
-| `<nombre>_contrabajo.wav` | contrabajo aislado y realzado (24 bits, misma frecuencia que la entrada) |
+| `<nombre>_contrabajo.wav` | contrabajo aislado y realzado (24 bits, misma frecuencia que la entrada); en modo `hybrid` es la mezcla de realce + capa resintetizada |
+| `<nombre>_contrabajo_realzado.wav` | modo `hybrid`: solo la señal realzada del bajo original, sin la capa resintetizada |
+| `<nombre>_contrabajo_sintetico.wav` | modo `hybrid`: solo la capa resintetizada (desactivar ambos con `--no-layers`) |
 | `<nombre>_contrabajo.mid` | línea de bajo transcrita (General MIDI *Acoustic Bass*) |
 | `<nombre>_contrabajo_notas.json` | notas (inicio, fin, nota, f0 real, velocidad) + metadatos del proceso |
 | `<nombre>_contrabajo_sin_realce.wav` | con `--keep-raw`: el stem de Demucs sin procesar |

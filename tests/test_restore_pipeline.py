@@ -41,8 +41,15 @@ def test_pipeline_dsp_backend(tmp_path: Path, song, mode):
     assert np.isfinite(out).all()
     assert res.n_notes > 10
     assert Path(res.raw_path).exists()
-    if mode != "raw":
-        pass
+    if mode == "hybrid":
+        # realce solo (sin capa sintética) y capa sintética sola, misma longitud que la mezcla
+        enh, _ = load_audio(res.enhanced_path)
+        syn, _ = load_audio(res.synth_path)
+        assert enh.shape[-1] == out.shape[-1] == syn.shape[-1]
+        assert not np.allclose(enh, out)
+        assert np.abs(enh).max() <= 10 ** (-1 / 20) + 1e-3
+    else:
+        assert res.enhanced_path is None and res.synth_path is None
     meta = json.loads(Path(res.notes_json_path).read_text(encoding="utf-8"))
     assert meta["n_notes"] == res.n_notes
     assert Path(res.midi_path).exists()
@@ -52,8 +59,10 @@ def test_pipeline_stereo_input_and_output_sr(tmp_path: Path, song):
     inp = tmp_path / "estereo.wav"
     st = np.stack([song.mix, np.roll(song.mix, 5)])
     save_audio(inp, st, song.sr)
-    s = config.Settings(backend="dsp", mode="enhance", output_sr=22050, stereo="auto")
+    s = config.Settings(backend="dsp", mode="hybrid", output_sr=22050, stereo="auto")
     res = process_file(inp, tmp_path / "out", s)
     out, sr = load_audio(res.output_path)
     assert sr == 22050
     assert out.shape[0] == 2
+    enh, sr2 = load_audio(res.enhanced_path)
+    assert sr2 == 22050 and enh.shape == out.shape

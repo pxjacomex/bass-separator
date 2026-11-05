@@ -56,6 +56,7 @@ class Settings:
     stereo: str = "auto"                       # "auto" | "mono" | "stereo"
     write_midi: bool = True
     write_notes_json: bool = True
+    write_layers: bool = True                  # en modo hybrid: guardar también realce y capa sintética por separado
     keep_raw: bool = False                     # guardar el stem de bajo sin realce
     keep_stems: bool = False                   # guardar también batería/piano/otros
     bit_depth: str = "PCM_24"                  # subtipo de libsndfile

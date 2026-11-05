@@ -33,6 +33,8 @@ class Result:
     output_path: str
     midi_path: Optional[str] = None
     notes_json_path: Optional[str] = None
+    enhanced_path: Optional[str] = None      # solo realce, sin capa sintética (modo hybrid)
+    synth_path: Optional[str] = None         # solo capa sintética (modo hybrid)
     raw_path: Optional[str] = None
     stem_paths: Dict[str, str] = field(default_factory=dict)
     duration_s: float = 0.0
@@ -102,6 +104,7 @@ def process_array(y: np.ndarray, sr: int, settings: Settings, progress: Progress
         t3 = time.time()
         out, einfo = enhance_bass(bass_proc, DEMUCS_SR, track, notes, onsets, settings)
         timings["enhance"] = time.time() - t3
+    enhanced = out                      # señal "pura" (sin capa sintética)
 
     # 5. resíntesis
     synth_layer = None
@@ -122,14 +125,20 @@ def process_array(y: np.ndarray, sr: int, settings: Settings, progress: Progress
 
     # 6. frecuencia de salida
     out_sr = int(settings.output_sr or sr)
-    out = resample(out, DEMUCS_SR, out_sr)
-    out = match_length(out, int(round(n_in * out_sr / sr)))
-    raw = resample(bass_proc, DEMUCS_SR, out_sr)
+    n_out = int(round(n_in * out_sr / sr))
+
+    def finish(sig: np.ndarray) -> np.ndarray:
+        return match_length(resample(sig, DEMUCS_SR, out_sr), n_out)
+
+    out = finish(out)
+    enhanced = finish(enhanced)
+    raw = finish(normalize_peak(bass_proc, settings.target_peak_db))
+    synth_alone = finish(normalize_peak(synth_layer, settings.target_peak_db)) if synth_layer is not None else None
     timings["total"] = time.time() - t0
     _notify(progress, "Listo", 1.0)
-    return dict(output=out, output_sr=out_sr, raw=normalize_peak(raw, settings.target_peak_db),
+    return dict(output=out, output_sr=out_sr, enhanced=enhanced, raw=raw, synth=synth_alone,
                 stems=sep_res.stems, stems_sr=DEMUCS_SR, notes=notes, track=track, onsets=onsets,
-                synth=synth_layer, mono_input=mono_in, restore=asdict(rinfo), enhance=einfo,
+                mono_input=mono_in, restore=asdict(rinfo), enhance=einfo,
                 timings=timings, models=sep_res.models)
 
 
@@ -165,6 +174,15 @@ def process_file(input_path: str | Path, output_dir: str | Path, settings: Setti
                     notes=notes_to_dicts(res["notes"]))
         json_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         result.notes_json_path = str(json_path)
+    if settings.write_layers and settings.mode == "hybrid":
+        # la señal realzada sola ("casi pura") y la capa sintética sola, para mezclar a gusto
+        enh_path = output_dir / f"{stem_name}_contrabajo_realzado.wav"
+        save_audio(enh_path, res["enhanced"], res["output_sr"], subtype=settings.bit_depth)
+        result.enhanced_path = str(enh_path)
+        if res["synth"] is not None:
+            syn_path = output_dir / f"{stem_name}_contrabajo_sintetico.wav"
+            save_audio(syn_path, res["synth"], res["output_sr"], subtype=settings.bit_depth)
+            result.synth_path = str(syn_path)
     if settings.keep_raw:
         raw_path = output_dir / f"{stem_name}_contrabajo_sin_realce.wav"
         save_audio(raw_path, res["raw"], res["output_sr"], subtype=settings.bit_depth)
